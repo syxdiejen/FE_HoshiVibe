@@ -1,38 +1,203 @@
 "use client"
 
-import { useState } from "react"
-import { Package, Users, TrendingUp, ChevronDown, MoreHorizontal } from "lucide-react"
-import { Button } from "antd"
+import { useEffect, useState } from "react"
+import { getDashboardStats } from "../../../api/dashboardAPI"
+import { getAllOrders, getOrderById, type Order, type OrderDetail } from "../../../api/ordersAPI"
+import StatsCards from "./StatsCards"
+import RevenueChart from "./RevenueChart"
+import TopProductsTable from "./TopProductsTable"
+
+type DashboardSummary = {
+  totalProducts: number
+  totalOrders: number
+  totalUsers: number
+}
+
+type ChartDataPoint = {
+  month: number
+  value: number
+}
+
+type TopProduct = {
+  id: string
+  name: string
+  revenue: number
+  percentage: number
+  image: string
+}
 
 export default function StatisticsPage() {
-  const [selectedMonth] = useState("Tháng Một")
+  const [summary, setSummary] = useState<DashboardSummary | null>(null)
+  const [chartData, setChartData] = useState<ChartDataPoint[]>([])
+  const [topProducts, setTopProducts] = useState<TopProduct[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const chartData = [
-    { month: 1, value: 60 },
-    { month: 2, value: 80 },
-    { month: 3, value: 70 },
-    { month: 4, value: 110 },
-    { month: 5, value: 95 },
-    { month: 6, value: 60 },
-    { month: 7, value: 110 },
-    { month: 8, value: 50 },
-    { month: 9, value: 70 },
-    { month: 10, value: 60 },
-    { month: 11, value: 40 },
-    { month: 12, value: 80 },
-  ]
+  // Calculate top products from orders
+  const calculateTopProducts = async (orders: Order[]): Promise<TopProduct[]> => {
+    // Aggregate product data from order details
+    const productMap = new Map<string, { name: string; revenue: number; image: string; count: number }>()
 
-  const maxValue = Math.max(...chartData.map((d) => d.value))
+    // Process each order
+    for (const order of orders) {
+      // Only count paid/completed orders
+      if (order.status.toLowerCase() === "paid" || order.status.toLowerCase() === "completed") {
+        // If orderDetails is empty, try to fetch individual order details
+        let orderDetails: OrderDetail[] = order.orderDetails || []
+        
+        if (orderDetails.length === 0) {
+          try {
+            const fullOrder = await getOrderById(order.order_Id)
+            orderDetails = fullOrder.orderDetails || []
+          } catch {
+            // Skip if we can't fetch order details
+            continue
+          }
+        }
 
-  const topProducts = Array(4)
-    .fill(null)
-    .map((_, i) => ({
-      id: i + 1,
-      name: "Vòng cổ mềnh Mộc",
-      revenue: "2.000.000 VND",
-      percentage: 30,
-      image: `/placeholder.svg?height=80&width=80&query=vietnamese+wooden+necklace`,
+        // Aggregate product revenue
+        orderDetails.forEach((detail) => {
+          // Calculate totalPrice if not provided (price * quantity)
+          const totalPrice = detail.totalPrice || (detail.price && detail.quantity ? detail.price * detail.quantity : 0)
+          
+          // Check if we have product information and valid revenue
+          if (detail.product_Id && totalPrice > 0) {
+            const productId = detail.product_Id
+            const existing = productMap.get(productId) || {
+              name: detail.productName || `Product ${productId}`,
+              revenue: 0,
+              image: detail.productImageUrl || "/placeholder.svg",
+              count: 0,
+            }
+            
+            productMap.set(productId, {
+              ...existing,
+              revenue: existing.revenue + totalPrice,
+              count: existing.count + (detail.quantity || 1),
+            })
+          }
+        })
+      }
+    }
+
+    // Convert to array and sort by revenue (descending)
+    const products = Array.from(productMap.entries())
+      .map(([id, data]) => ({
+        id,
+        name: data.name,
+        revenue: data.revenue,
+        image: data.image,
+        count: data.count,
+      }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 4) // Get top 4
+
+    // Calculate total revenue for percentage calculation
+    const totalRevenue = products.reduce((sum, p) => sum + p.revenue, 0)
+
+    // Add percentage and format
+    return products.map((product) => ({
+      id: product.id,
+      name: product.name,
+      revenue: product.revenue,
+      percentage: totalRevenue > 0 ? Math.round((product.revenue / totalRevenue) * 100) : 0,
+      image: product.image,
     }))
+  }
+
+  // Calculate monthly income from orders
+  const calculateMonthlyIncome = (orders: Order[]): ChartDataPoint[] => {
+    // Initialize all 12 months with 0 income
+    const monthlyIncome: { [key: number]: number } = {}
+    for (let i = 1; i <= 12; i++) {
+      monthlyIncome[i] = 0
+    }
+
+    // Get current year to filter orders
+    const currentYear = new Date().getFullYear()
+
+    // Group orders by month and sum finalPrice
+    orders.forEach((order) => {
+      // Only count paid/completed orders
+      if (order.status.toLowerCase() === "paid" || order.status.toLowerCase() === "completed") {
+        const orderDate = new Date(order.orderDate)
+        
+        // Only include orders from the current year
+        if (orderDate.getFullYear() === currentYear) {
+          const month = orderDate.getMonth() + 1 // getMonth() returns 0-11, we need 1-12
+          monthlyIncome[month] = (monthlyIncome[month] || 0) + order.finalPrice
+        }
+      }
+    })
+
+    // Convert to array format and ensure it's sorted by month
+    return Object.entries(monthlyIncome)
+      .map(([month, value]) => ({
+        month: parseInt(month),
+        value: value,
+      }))
+      .sort((a, b) => a.month - b.month) // Ensure months are sorted 1-12
+  }
+
+  useEffect(() => {
+    let mounted = true
+
+    const fetchData = async () => {
+      setLoading(true)
+      setError(null)
+
+      try {
+        // Fetch dashboard stats and orders in parallel
+        const [statsData, orders] = await Promise.all([
+          getDashboardStats(),
+          getAllOrders(),
+        ])
+
+        if (mounted) {
+          setSummary(statsData.summary)
+          const monthlyData = calculateMonthlyIncome(orders)
+          setChartData(monthlyData)
+          
+          // Calculate top products from orders
+          const topProductsData = await calculateTopProducts(orders)
+          setTopProducts(topProductsData)
+        }
+      } catch {
+        if (mounted) {
+          setError("Không thể tải thống kê. Vui lòng thử lại sau.")
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false)
+        }
+      }
+    }
+
+    fetchData()
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat("vi-VN").format(amount) + " VND"
+  }
+
+  // Format top products for display
+  const formattedTopProducts: Array<{
+    id: string | number
+    name: string
+    revenue: string
+    percentage: number
+    image: string
+  }> = topProducts.map((product) => ({
+    id: product.id,
+    name: product.name,
+    revenue: formatCurrency(product.revenue),
+    percentage: product.percentage,
+    image: product.image,
+  }))
 
   return (
     <div className="flex min-h-screen bg-gray-50">
@@ -44,162 +209,28 @@ export default function StatisticsPage() {
 
         {/* Stats Cards */}
         <div className="px-6 pb-6">
-          <div className="grid grid-cols-2 gap-6">
-            {/* Total Orders */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-2">Tổng số đơn hàng</p>
-                  <p className="text-3xl font-semibold text-gray-800 mb-1">5.000 đơn</p>
-                  <div className="flex items-center gap-1 text-emerald-500">
-                    <TrendingUp className="w-4 h-4" />
-                    <span className="text-sm font-medium">+10.24%</span>
-                  </div>
-                </div>
-                <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
-                  <Package className="w-6 h-6 text-gray-600" />
-                </div>
-              </div>
-            </div>
-
-            {/* Total Customers */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 mb-2">Tổng số khách hàng</p>
-                  <p className="text-3xl font-semibold text-gray-800 mb-1">3.000 người</p>
-                  <div className="flex items-center gap-1 text-emerald-500">
-                    <TrendingUp className="w-4 h-4" />
-                    <span className="text-sm font-medium">+0.05%</span>
-                  </div>
-                </div>
-                <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
-                  <Users className="w-6 h-6 text-gray-600" />
-                </div>
-              </div>
-            </div>
-          </div>
+          <StatsCards summary={summary} loading={loading} />
+          {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
         </div>
 
         {/* Revenue Chart */}
         <div className="px-6 pb-6">
-          <div className="bg-white rounded-lg border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-base font-semibold text-gray-800">Tổng doanh số từng tháng</h2>
-              <div className="flex items-center gap-2">
-                <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
-                  <span className="text-sm text-gray-700">{selectedMonth}</span>
-                  <ChevronDown className="w-4 h-4 text-gray-500" />
-                </button>
-                <button className="p-2 hover:bg-gray-100 rounded-lg">
-                  <MoreHorizontal className="w-5 h-5 text-gray-600" />
-                </button>
-              </div>
-            </div>
-
-            {/* Chart */}
-            <div className="relative h-64">
-              {/* Y-axis */}
-              <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-gray-500 pr-4">
-                <span>120</span>
-                <span>90</span>
-                <span>60</span>
-                <span>30</span>
-                <span>0</span>
-              </div>
-
-              {/* Chart area */}
-              <div className="ml-8 h-full border-l border-b border-gray-200 relative">
-                {/* Grid lines */}
-                <div className="absolute inset-0 flex flex-col justify-between">
-                  {[0, 1, 2, 3, 4].map((i) => (
-                    <div key={i} className="border-t border-gray-100" />
-                  ))}
-                </div>
-
-                {/* Polyline */}
-                <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
-                  <polyline
-                    fill="none"
-                    stroke="#3B82F6"
-                    strokeWidth="2"
-                    points={chartData
-                      .map((d, i) => {
-                        const x = (i / (chartData.length - 1)) * 100
-                        const y = 100 - (d.value / maxValue) * 100
-                        return `${x}%,${y}%`
-                      })
-                      .join(" ")}
-                  />
-                  {chartData.map((d, i) => {
-                    const x = (i / (chartData.length - 1)) * 100
-                    const y = 100 - (d.value / maxValue) * 100
-                    return <circle key={i} cx={`${x}%`} cy={`${y}%`} r="4" fill="#3B82F6" />
-                  })}
-                </svg>
-              </div>
-            </div>
-          </div>
+          <RevenueChart chartData={chartData} loading={loading} />
         </div>
 
         {/* Top Products Table */}
         <div className="px-6 pb-6">
-          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Sản phẩm bán chạy nhất</th>
-                    <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Doanh thu</th>
-                    <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Tỉ lệ (%)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {topProducts.map((product) => (
-                    <tr key={product.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 bg-gray-100 rounded-lg overflow-hidden">
-                            <img
-                              src={product.image || "/placeholder.svg"}
-                              alt={product.name}
-                              className="w-full h-full object-cover"
-                            />
-                          </div>
-                          <span className="text-sm text-gray-800">{product.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className="text-sm text-gray-800">{product.revenue}</span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 max-w-xs">
-                            <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-blue-600 rounded-full"
-                                style={{ width: `${product.percentage}%` }}
-                              />
-                            </div>
-                          </div>
-                          <span className="text-sm text-gray-800 w-12">{product.percentage}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {loading ? (
+            <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
+              <p className="text-sm text-gray-600">Đang tải dữ liệu sản phẩm...</p>
             </div>
-
-            {/* Footer Actions */}
-            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
-              <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
-                <span className="text-sm text-gray-700">7 ngày qua</span>
-                <ChevronDown className="w-4 h-4 text-gray-500" />
-              </button>
-              <Button>Xem tất cả</Button>
+          ) : formattedTopProducts.length > 0 ? (
+            <TopProductsTable products={formattedTopProducts} />
+          ) : (
+            <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
+              <p className="text-sm text-gray-600">Không có dữ liệu sản phẩm</p>
             </div>
-          </div>
+          )}
         </div>
       </main>
     </div>

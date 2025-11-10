@@ -1,8 +1,10 @@
-// src/App.tsx
+﻿// src/App.tsx
 import { useState, useEffect } from 'react'
 import {
   Header, HeroSection, ProductCategories, ChatWidget, Footer,
-  About, Products, Login, Register, Membership, Search, ProductDetail, Cart
+  About, Products, Login, Register, Membership, Search, ProductDetail, Cart,
+  SuccessPaymentReturn,
+  FailPaymentReturn
 } from './components'
 import CustomDesign from './components/CustomDesign'
 import type { PageKey } from './types/navigation'
@@ -197,6 +199,17 @@ function App() {
             total={cartItems.reduce((s, i) => s + i.price * i.quantity, 0)}
           />
         )
+
+        case 'pay_success':
+          return <SuccessPaymentReturn
+           onNavigateOrders={() => handleNavigation('home')}
+           onNavigateHome={() => handleNavigation('home')}
+         />
+
+        case 'pay_fail':
+          return <FailPaymentReturn
+           onBackToCart={() => handleNavigation('cart')}
+         />
 
       case 'home':
       default:

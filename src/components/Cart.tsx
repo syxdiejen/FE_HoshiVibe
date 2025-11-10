@@ -22,7 +22,7 @@ const formatVND = (n: number) => n.toLocaleString('vi-VN', { maximumFractionDigi
 
 const Cart = ({ onNavigate, items, onUpdateQty, onRemove, /*onCheckout*/ }: CartProps) => {
   const [note, setNote] = useState('')
-  // const [payment, setPayment] = useState<'vietqr' | 'zalopay' | 'momo' | 'cod'>('vietqr')
+  const [payment, setPayment] = useState<'vnpay' | 'cod'>('vnpay')
 
   const { subtotal, total, itemCount } = useMemo(() => {
     const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0)
@@ -31,6 +31,35 @@ const Cart = ({ onNavigate, items, onUpdateQty, onRemove, /*onCheckout*/ }: Cart
     const total = subtotal + shipping
     return { subtotal, total, itemCount }
   }, [items])
+
+  const handleCheckout = async () => {
+  if (items.length === 0) return;
+
+  if (payment === 'cod') {
+    // 👉 COD: điều hướng thẳng sang trang thành công
+    onNavigate?.('pay_success' as PageKey); // nhớ thêm key này trong PageKey
+    return;
+  }
+
+  // 👉 VNPay: gọi BE lấy paymentUrl rồi redirect
+  try {
+    const res = await fetch('/api/payments/vnpay/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // tuỳ bạn: orderId/cartId/amount/returnUrl/failUrl ...
+      }),
+    });
+    const data = await res.json();
+    if (data?.paymentUrl) {
+      window.location.href = data.paymentUrl;
+    } else {
+      onNavigate?.('pay_fail' as PageKey); // nhớ thêm key này trong PageKey
+    }
+  } catch {
+    onNavigate?.('pay_fail' as PageKey);
+  }
+};
 
   return (
     <div style={{ background: '#ffffff', minHeight: '100vh' }}>
@@ -54,7 +83,7 @@ const Cart = ({ onNavigate, items, onUpdateQty, onRemove, /*onCheckout*/ }: Cart
         .pay__opt--active{border-color:#000;background:#fefefe}
         .pay__radio{margin-left:auto;width:18px;height:18px}
         .pay__icon{width:28px;height:18px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:800}
-        .pay__vietqr{background:#e11d48}
+        .pay__vnpay{background:#e11d48}
         .pay__zalo{background:#0ea5e9}
         .pay__momo{background:#a21caf}
         .pay__cod{background:#10b981}
@@ -113,33 +142,23 @@ const Cart = ({ onNavigate, items, onUpdateQty, onRemove, /*onCheckout*/ }: Cart
 
             {/* Payment methods */}
             <div className="pay__title">Phương thức thanh toán</div>
-            {/* <div onClick={()=> setPayment('vietqr')} className={`pay__opt ${payment==='vietqr' ? 'pay__opt--active' : ''}`}>
-              <span className="pay__icon pay__vietqr">QR</span>
-              <span>VietQR</span>
-              <input className="pay__radio" type="radio" checked={payment==='vietqr'} readOnly />
-            </div>
-            <div onClick={()=> setPayment('zalopay')} className={`pay__opt ${payment==='zalopay' ? 'pay__opt--active' : ''}`}>
-              <span className="pay__icon pay__zalo">ZL</span>
-              <span>ZaloPay</span>
-              <input className="pay__radio" type="radio" checked={payment==='zalopay'} readOnly />
-            </div>
-            <div onClick={()=> setPayment('momo')} className={`pay__opt ${payment==='momo' ? 'pay__opt--active' : ''}`}>
-              <span className="pay__icon pay__momo">MO</span>
-              <span>MoMo</span>
-              <input className="pay__radio" type="radio" checked={payment==='momo'} readOnly />
+            <div onClick={()=> setPayment('vnpay')} className={`pay__opt ${payment==='vnpay' ? 'pay__opt--active' : ''}`}>
+              <span className="pay__icon pay__vnpay">VN</span>
+              <span>VNPay</span>
+              <input className="pay__radio" type="radio" checked={payment==='vnpay'} readOnly />
             </div>
             <div onClick={()=> setPayment('cod')} className={`pay__opt ${payment==='cod' ? 'pay__opt--active' : ''}`}>
               <span className="pay__icon pay__cod">$</span>
               <span>Thanh toán tiền mặt</span>
               <input className="pay__radio" type="radio" checked={payment==='cod'} readOnly />
-            </div> */}
+            </div>
 
             {/* Price breakdown */}
             <div className="cart__line" style={{ marginTop:10 }}><span>Tạm tính</span><span>{formatVND(subtotal)}</span></div>
             <div className="cart__line"><span>Giảm giá</span><span>0 VNĐ</span></div>
             <div className="pay__grand"><span>Tổng thanh toán</span><span className="pay__grand-amount">{formatVND(total)}</span></div>
 
-            <button   onClick={() => onNavigate?.('checkout')}   // 👈 thay vì onCheckout()
+            <button   onClick={handleCheckout} 
   style={{ width:'100%', marginTop:14, padding:'16px 14px', background:'#000', color:'#fff',
            border:'none', borderRadius:12, cursor:'pointer', fontWeight:900, letterSpacing:'.06em',
            textTransform:'uppercase' }}>
